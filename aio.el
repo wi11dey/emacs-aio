@@ -36,22 +36,14 @@
 (define-error 'aio-cancel "Promise was canceled")
 (define-error 'aio-timeout "Timeout was reached")
 
-(defun aio-promise ()
-  "Create a new promise object."
-  (record 'aio-promise nil ()))
-
-(defsubst aio-promise-p (object)
-  "Return non-nil if OBJECT is a promise."
-  (and (eq 'aio-promise (type-of object))
-       (= 3 (length object))))
-
-(defsubst aio-result (promise)
-  "Return the result of PROMISE, or nil if it is unresolved.
-
-Promise results are wrapped in a function.  The result must be
-called (e.g. `funcall') in order to retrieve the value."
-  (cl-check-type promise aio-promise)
-  (aref promise 1))
+(cl-defstruct (aio-promise
+               (:conc-name aio-)
+               (:constructor nil)
+               (:constructor aio-promise2 ((result nil))))
+  "A promise object. Promise results are wrapped in a function. The
+result must be called (e.g. `funcall') in order to retrieve the value."
+  result
+  (-callbacks nil :type list))
 
 (defun aio-listen (promise callback)
   "Add CALLBACK to PROMISE.
@@ -61,7 +53,7 @@ scheduled for the next event loop turn."
   (let ((result (aio-result promise)))
     (if result
         (run-at-time 0 nil callback result)
-      (push callback (aref promise 2)))))
+      (push callback (aio--callbacks promise)))))
 
 (defun aio-resolve (promise value-function)
   "Resolve this PROMISE with VALUE-FUNCTION.
