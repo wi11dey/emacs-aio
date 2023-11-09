@@ -3,6 +3,9 @@
 ;; This is free and unencumbered software released into the public domain.
 
 ;; Author: Christopher Wellons <wellons@nullprogram.com>
+;;      Kien Nguyen <kien.n.quang@gmail.com>
+;;      Philipp Stephani <phst@google.com>
+;;      Will Dey <will_dey@alumni.harvard.edu>
 ;; URL: https://github.com/skeeto/emacs-aio
 ;; Version: 1.0
 ;; Package-Requires: ((emacs "26.1"))
