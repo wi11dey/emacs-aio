@@ -78,7 +78,7 @@ value or rethrows a signal."
       (dolist (callback callbacks)
         (run-at-time 0 nil callback value-function)))))
 
-(defun aio--step (iter promise yield-result)
+(defun aio--step (iter yield-result)
   "Advance ITER to the next promise.
 
 PROMISE is the return promise of the iterator, which was returned
@@ -90,7 +90,7 @@ function result directly from the previously yielded promise."
                until (aio-promise-p result)
                finally (aio-listen result
                                    (lambda (value)
-                                     (aio--step iter promise value))))
+                                     (aio--step iter value))))
     (iter-end-of-sequence)))
 
 (defmacro aio-with-promise (promise &rest body)
@@ -147,7 +147,7 @@ ARGLIST and BODY."
                                ,@(cdr split-body)))
                            ,args)))
          (prog1 ,promise
-           (aio--step iter ,promise nil))))))
+           (aio--step iter nil))))))
 
 (defmacro aio-defun (name arglist &rest body)
   "Like `aio-lambda' but gives the function a NAME like `defun'.
