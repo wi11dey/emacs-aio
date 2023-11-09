@@ -42,11 +42,12 @@
 (cl-defstruct (aio-promise
                (:conc-name aio-)
                (:constructor nil)
-               (:constructor aio-promise2 ((result nil))))
+               (:constructor aio-promise ((result nil)
+                                          (-callbacks ()))))
   "A promise object. Promise results are wrapped in a function. The
 result must be called (e.g. `funcall') in order to retrieve the value."
   result
-  (-callbacks nil :type list))
+  (-callbacks nil :type list :documentation "A LIFO list of subscribers."))
 
 (defun aio-listen (promise callback)
   "Add CALLBACK to PROMISE.
@@ -67,9 +68,9 @@ function that takes no arguments and either returns the result
 value or rethrows a signal."
   (cl-check-type value-function function)
   (unless (aio-result promise)
-    (let ((callbacks (nreverse (aref promise 2))))
-      (setf (aref promise 1) value-function
-            (aref promise 2) ())
+    (let ((callbacks (nreverse (aio--callbacks promise))))
+      (setf (aio-result     promise) value-function
+            (aio--callbacks promise) ())
       (dolist (callback callbacks)
         (run-at-time 0 nil callback value-function)))))
 
