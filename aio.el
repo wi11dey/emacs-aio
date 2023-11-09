@@ -74,6 +74,15 @@ value or rethrows a signal."
       (dolist (callback callbacks)
         (run-at-time 0 nil callback value-function)))))
 
+(defun aio-accept (promise value)
+  (aio-resolve promise
+               (lambda () value)))
+
+(defun aio-reject (promise rejection)
+  (aio-resolve promise
+               (lambda ()
+                 (signal (car rejection) (cdr rejection)))))
+
 (defun aio--step (iter yield-result)
   "Advance ITER to the next promise.
 
@@ -82,8 +91,10 @@ by the originating async function.  YIELD-RESULT is the value
 function result directly from the previously yielded promise."
   (condition-case _
       (cl-loop for result = (iter-next iter yield-result)
-               then (iter-next iter (lambda () result))
-               until (aio-promise-p result)
+               then (iter-next iter (lambda () (aio-awaited-value result)))
+               if (not (aio-awaited-p result))
+               return result
+               until (aio-promise-p (aio-awaited-value result))
                finally (aio-listen result
                                    (lambda (value)
                                      (aio--step iter value))))
@@ -104,6 +115,26 @@ promise and rethrown in the promise's listeners."
                   (error (lambda ()
                            (signal (car error) (cdr error)))))))
 
+(defun aio-make-promise (executor)
+  (let ((promise (aio-promise)))
+    (condition-case error
+        (funcall executor
+                 (lambda (result)
+                   (aio-accept promise result))
+                 (lambda (rejection)
+                   (aio-reject promise rejection)))
+      (error (aio-reject promise error)))
+    promise))
+
+(defun aio-promisify (func)
+  (lambda (&rest args)))
+
+(cl-defstruct (aio-awaited
+               (:constructor nil)
+               (:constructor aio-awaited (value)))
+  "A wrapped value that was passwed to `aio-await'."
+  value)
+
 (defmacro aio-await (expr)
   "If EXPR evaluates to a promise, pause until the promise is resolved.
 
@@ -115,7 +146,7 @@ async functions using this macro.
 
 This macro can only be used inside an async function, either
 `aio-lambda' or `aio-defun'."
-  `(funcall (iter-yield ,expr)))
+  `(funcall (iter-yield (aio-awaited ,expr))))
 
 (defmacro aio-lambda (arglist &rest body)
   "Like `lambda', but defines an async function.
@@ -135,7 +166,7 @@ ARGLIST and BODY."
   (let ((args (make-symbol "args"))
         (promise (make-symbol "promise"))
         (split-body (macroexp-parse-body body)))
-    `(lambda (&rest ,args)
+    `(iter-lambda (&rest ,args)
        ,@(car split-body)
        (let* ((,promise (aio-promise))
               (iter (apply (iter-lambda ,arglist
@@ -188,7 +219,7 @@ All awaiters will receive an `aio-cancel' signal.  The actual
 underlying asynchronous operation will not actually be canceled.
 Optional argument REASON is used as error data for the signal."
   (unless (aio-result promise)
-    (aio-resolve promise (lambda () (signal 'aio-cancel reason)))))
+    (aio-reject promise (cons 'aio-cancel reason))))
 
 (defmacro aio-with-async (&rest body)
   "Evaluate BODY asynchronously as if it was inside `aio-lambda'.
@@ -261,7 +292,7 @@ automatically wrapped with a value function (see `aio-resolve')."
   (let ((promise (aio-promise)))
     (prog1 promise
       (run-at-time seconds nil
-                   #'aio-resolve promise (lambda () result)))))
+                   #'aio-accept promise result))))
 
 (defun aio-idle (seconds &optional result)
   "Create a promise that is resolved after idle SECONDS with RESULT.
@@ -271,14 +302,14 @@ automatically wrapped with a value function (see `aio-resolve')."
   (let ((promise (aio-promise)))
     (prog1 promise
       (run-with-idle-timer seconds nil
-                           #'aio-resolve promise (lambda () result)))))
+                           #'aio-accept promise result))))
 
 (defun aio-timeout (seconds)
   "Create a promise with a timeout error after SECONDS."
   (let ((timeout (aio-promise)))
     (prog1 timeout
-      (run-at-time seconds nil#'aio-resolve timeout
-                   (lambda () (signal 'aio-timeout seconds))))))
+      (run-at-time seconds nil #'aio-reject timeout
+                   (cons 'aio-timeout seconds)))))
 
 (defun aio-url-retrieve (url &optional silent inhibit-cookies)
   "Wraps `url-retrieve' in a promise.
@@ -297,12 +328,9 @@ URLs’ for details."
     (prog1 promise
       (condition-case error
           (url-retrieve url (lambda (status)
-                              (let ((value (cons status (clone-buffer))))
-                                (aio-resolve promise (lambda () value))))
+                              (aio-accept promise (cons status (clone-buffer))))
                         silent inhibit-cookies)
-        (error (aio-resolve promise
-                            (lambda ()
-                              (signal (car error) (cdr error)))))))))
+        (error (aio-reject promise error))))))
 
 (cl-defun aio-make-callback (&key tag once)
   "Return a new callback function and its first promise.
@@ -329,16 +357,14 @@ The `aio-chain' macro makes it easier to use these promises."
          (callback
           (if once
               (lambda (&rest args)
-                (let ((result (if tag
-                                  (cons tag args)
-                                args)))
-                  (aio-resolve promise (lambda () result))))
+                (aio-accept promise (if tag
+                                        (cons tag args)
+                                      args)))
             (lambda (&rest args)
-              (let* ((next-promise (aio-promise))
-                     (result (if tag
-                                 (cons next-promise (cons tag args))
-                               (cons next-promise args))))
-                (aio-resolve promise (lambda () result))
+              (let ((next-promise (aio-promise)))
+                (aio-accept promise (if tag
+                                        (cons next-promise (cons tag args))
+                                      (cons next-promise args)))
                 (setf promise next-promise))))))
     (cons callback promise)))
 
@@ -436,8 +462,7 @@ promise, not that promise's result.  You will need to `aio-await'
 on it, or use `aio-result'."
   (let* ((result (aio-promise))
          (callback (lambda ()
-                     (let ((promise (aio--queue-get (aref select 3))))
-                       (aio-resolve result (lambda () promise))))))
+                     (aio-accept result (aio--queue-get (aref select 3))))))
     (prog1 result
       (if (aio--queue-empty-p (aref select 3))
           (setf (aref select 4) callback)
@@ -461,7 +486,7 @@ woken up.  This function is not awaitable."
   (when (<= (cl-incf (aref sem 1)) 0)
     (let ((waiting (aio--queue-get (aref sem 2))))
       (when waiting
-        (aio-resolve waiting (lambda () nil))))))
+        (aio-accept waiting nil)))))
 
 (defun aio-sem-wait (sem)
   "Decrement the value of SEM.
